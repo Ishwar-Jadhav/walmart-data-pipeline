@@ -733,6 +733,3 @@ MIT License — see LICENSE file for details.
 Building end-to-end data pipelines that scale. Passionate about lakehouse architectures, incremental processing, and AI-driven data discovery.
 
 ---
-
-**Last Updated:** July 2026  
-**YouTube Demo:** [Watch Full Walkthrough](https://youtu.be/ZEE-jNAthB0?si=ABQX_ApyBbGDD5SZ)
