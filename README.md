@@ -728,7 +728,7 @@ MIT License — see LICENSE file for details.
 
 ## 👤 Author
 
-**Ishh** | Data Engineer | [LinkedIn](https://linkedin.com/in/yourprofile) | [GitHub](https://github.com/yourprofile)
+**Ishwar Jadhav** | Data Engineer | [LinkedIn](https://www.linkedin.com/in/ishwarj/) | [Portfolio](https://ishwar.lovable.app/)
 
 Building end-to-end data pipelines that scale. Passionate about lakehouse architectures, incremental processing, and AI-driven data discovery.
 
