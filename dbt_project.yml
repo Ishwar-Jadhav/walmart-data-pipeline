@@ -1,0 +1,272 @@
+# dbt_project.yml - WALMART Data Engineering Project Configuration
+# Defines models, materialization, testing, and build behavior
+
+name: 'walmart_project'
+version: '1.0.0'
+config-version: 2
+
+profile: 'databricks'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+data-paths: ["data"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+require-dbt-version: [">=1.0.0", "<2.0.0"]
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+
+models:
+  walmart_project:
+    # Global defaults for all models
+    +materialized: table
+    +file_key_sort: false
+    +meta:
+      owner: "data-engineering"
+      version: "1.0"
+
+    # STAGING (Bronze → Silver)
+    staging:
+      +materialized: incremental
+      +unique_key: 
+        - '{{ env_var("DBT_UNIQUE_KEY", "id") }}'
+      +on_schema_change: fail
+      +incremental_strategy: merge
+      +tags: 
+        - staging
+        - bronze_to_silver
+      +meta:
+        layer: silver
+        refresh_frequency: daily
+      
+      # Staging model configs
+      stg_customers:
+        +meta:
+          description: "Deduplicated customer records from Bronze"
+          primary_key: customer_id
+      
+      stg_orders:
+        +meta:
+          description: "Cleaned order transactions from Bronze"
+          primary_key: order_id
+      
+      stg_order_items:
+        +meta:
+          description: "Order line items from Bronze"
+          primary_key: [order_id, item_sequence]
+      
+      stg_products:
+        +meta:
+          description: "Product catalog from Bronze"
+          primary_key: product_id
+
+    # INTERMEDIATE (Silver Refinements)
+    intermediate:
+      +materialized: table
+      +tags:
+        - intermediate
+        - silver_refinement
+      +meta:
+        layer: silver
+        refresh_frequency: daily
+      
+      int_customer_orders_summary:
+        +meta:
+          description: "Customer-level order aggregations and RFM metrics"
+      
+      int_product_performance:
+        +meta:
+          description: "Product-level sales and engagement metrics"
+
+    # MARTS (Silver → Gold - Analytics Ready)
+    marts:
+      +materialized: table
+      +tags:
+        - marts
+        - gold
+      +meta:
+        layer: gold
+        refresh_frequency: daily
+      
+      # Fact Tables
+      fct_orders:
+        +materialized: incremental
+        +unique_key: order_id
+        +on_schema_change: fail
+        +incremental_strategy: merge
+        +meta:
+          description: "Orders fact table - analytics ready"
+          type: fact
+          grain: order
+      
+      fct_order_items:
+        +materialized: incremental
+        +unique_key: [order_id, item_sequence]
+        +on_schema_change: fail
+        +incremental_strategy: merge
+        +meta:
+          description: "Order items fact table"
+          type: fact
+          grain: order_item
+      
+      # Dimension Tables
+      dim_customers:
+        +materialized: table
+        +meta:
+          description: "Customer dimension - SCD Type 1"
+          type: dimension
+      
+      dim_products:
+        +materialized: table
+        +meta:
+          description: "Product dimension"
+          type: dimension
+      
+      dim_date:
+        +materialized: table
+        +meta:
+          description: "Date dimension for time-based joins"
+          type: dimension
+
+# ============================================================================
+# TEST CONFIGURATION
+# ============================================================================
+
+tests:
+  walmart_project:
+    # Run tests after model builds
+    +warn_if: "!= 0"  # Warn on any failed tests
+    +error_if: "> 10" # Error if >10 tests fail
+    +fail_calc: "count(*)"
+    +store_failures: true  # Store failed test results for debugging
+
+# ============================================================================
+# SEEDS CONFIGURATION
+# ============================================================================
+
+seeds:
+  walmart_project:
+    +column_types:
+      id: bigint
+      amount: decimal(10, 2)
+      created_at: timestamp_ntz
+    +quote_columns: true
+
+# ============================================================================
+# SNAPSHOTS CONFIGURATION (for SCD Type 2)
+# ============================================================================
+
+snapshots:
+  walmart_project:
+    +target_schema: snapshots
+    +meta:
+      layer: snapshot
+
+    # Customer snapshots (track history)
+    snapshot_customers:
+      +unique_key: customer_id
+      +strategy: timestamp
+      +updated_at: dbt_updated_at
+
+# ============================================================================
+# VARIABLES
+# ============================================================================
+
+vars:
+  # Data quality thresholds
+  min_order_amount: 0.01
+  max_order_amount: 100000
+  
+  # Recency thresholds (in days)
+  active_customer_days: 30
+  at_risk_customer_days: 90
+  
+  # Discount rate boundaries
+  min_discount_rate: 0.0
+  max_discount_rate: 1.0
+  
+  # Database and schema names
+  bronze_schema: 'bronze'
+  silver_schema: 'silver'
+  gold_schema: 'gold'
+  
+  # Feature flags
+  enable_incremental_loads: true
+  enable_quality_tests: true
+  enable_snapshots: false
+
+# ============================================================================
+# METRICS (dbt 1.1+)
+# ============================================================================
+
+metrics:
+  - name: total_revenue
+    label: "Total Revenue"
+    model: ref('fct_orders')
+    description: "Total revenue from completed orders"
+    calculation_method: sum
+    expression: total_order_value
+    timestamp: order_date
+    time_grains: [day, week, month, quarter, year]
+    dimensions: [customer_country, order_year, order_month]
+    meta:
+      owner: "finance"
+
+  - name: order_count
+    label: "Order Count"
+    model: ref('fct_orders')
+    description: "Total number of completed orders"
+    calculation_method: count_distinct
+    expression: order_id
+    timestamp: order_date
+    time_grains: [day, week, month]
+    meta:
+      owner: "operations"
+
+  - name: avg_order_value
+    label: "Average Order Value"
+    model: ref('fct_orders')
+    description: "Average order value across all orders"
+    calculation_method: average
+    expression: total_order_value
+    timestamp: order_date
+    time_grains: [day, month, year]
+    meta:
+      owner: "analytics"
+
+# ============================================================================
+# EXPOSURE (for BI Tools)
+# ============================================================================
+
+exposures:
+  - name: customer_dashboard
+    description: "Customer metrics and segmentation dashboard"
+    type: dashboard
+    maturity: production
+    owner:
+      name: "Analytics Team"
+      email: "analytics@walmart.com"
+    depends_on:
+      - ref('fct_orders')
+      - ref('dim_customers')
+    tags: [bi, customer_analytics]
+
+  - name: revenue_reporting
+    description: "Executive revenue dashboard"
+    type: dashboard
+    maturity: production
+    owner:
+      name: "Finance Team"
+      email: "finance@walmart.com"
+    depends_on:
+      - ref('fct_orders')
+      - metric('total_revenue')
+    tags: [bi, financial]

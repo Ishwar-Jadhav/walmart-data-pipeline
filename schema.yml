@@ -1,0 +1,321 @@
+# dbt schema.yml - Data Quality Tests & Model Documentation
+# Purpose: Define sources, models, columns, tests, and data contracts
+# Location: dbt/models/schema.yml
+
+version: 2
+
+# ============================================================================
+# SOURCES (Bronze Layer - Raw Data)
+# ============================================================================
+
+sources:
+  - name: bronze
+    description: Raw data layer - unchanged from source systems
+    database: walmart
+    schema: bronze
+    tables:
+      - name: customers
+        description: Raw customer data from Ghost.build Agentic DB
+        columns:
+          - name: customer_id
+            description: Unique customer identifier
+            tests:
+              - not_null
+              - unique
+          - name: first_name
+            description: Customer first name
+            tests:
+              - not_null
+          - name: last_name
+            description: Customer last name
+            tests:
+              - not_null
+          - name: email
+            description: Customer email address
+            tests:
+              - not_null
+              - unique
+          - name: country
+            description: Customer country code (ISO-3166)
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ['US', 'CA', 'MX', 'BR', 'UK', 'DE', 'FR', 'JP', 'AU']
+          - name: _loaded_at
+            description: Timestamp when record was loaded to Bronze
+            tests:
+              - not_null
+
+      - name: orders
+        description: Raw order transactions from Ghost.build
+        columns:
+          - name: order_id
+            description: Unique order identifier
+            tests:
+              - not_null
+              - unique
+          - name: customer_id
+            description: Foreign key to customers
+            tests:
+              - not_null
+              - relationships:
+                  to: source('bronze', 'customers')
+                  field: customer_id
+          - name: order_date
+            description: Date order was placed
+            tests:
+              - not_null
+          - name: order_amount
+            description: Gross order amount (USD)
+            tests:
+              - not_null
+              - dbt_utils.expression_is_true:
+                  expression: "> 0"
+                  config:
+                    error_if: ">1000"  # Alert if >1000 violations
+          - name: status
+            description: Order fulfillment status
+            tests:
+              - accepted_values:
+                  values: ['PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'CANCELLED', 'RETURNED']
+
+# ============================================================================
+# MODELS (Silver & Gold Layers)
+# ============================================================================
+
+models:
+  # ========== STAGING MODELS (Bronze → Silver) ==========
+  
+  - name: stg_customers
+    description: |
+      Cleaned and deduplicated customer dimension from Bronze.
+      - Deduplicates using latest timestamp
+      - Applies data quality rules (valid countries only)
+      - Normalizes email to lowercase
+      - Cleans phone numbers (removes special characters)
+    columns:
+      - name: customer_id
+        description: Unique customer identifier (natural key)
+        tests:
+          - unique
+          - not_null
+      - name: email
+        description: Normalized email address (lowercase)
+        tests:
+          - unique
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "email LIKE '%@%.%'"  # Basic email validation
+      - name: country
+        description: Customer country code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['US', 'CA', 'MX', 'BR', 'UK', 'DE', 'FR', 'JP', 'AU']
+      - name: dbt_loaded_at
+        description: Timestamp when record was transformed by dbt
+        tests:
+          - not_null
+
+  - name: stg_orders
+    description: |
+      Cleaned order transactions from Bronze.
+      - Filters to completed/active orders (excludes CANCELLED, RETURNED)
+      - Validates monetary amounts
+      - Ensures referential integrity to customers
+    columns:
+      - name: order_id
+        description: Unique order identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Foreign key to customers
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+      - name: order_amount
+        description: Order total (USD)
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+      - name: status
+        description: Order status (filtered to active only in this table)
+        tests:
+          - accepted_values:
+              values: ['PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'COMPLETED']
+
+  # ========== INTERMEDIATE MODELS (Business Logic) ==========
+  
+  - name: int_customer_orders_summary
+    description: |
+      Customer-level order aggregation with RFM-style metrics.
+      Used to understand customer value and engagement.
+      - Aggregates orders by customer
+      - Calculates monetary and frequency metrics
+      - Categorizes customers (Active/At Risk/Inactive)
+    columns:
+      - name: customer_id
+        description: Unique customer identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      - name: total_orders
+        description: Total number of orders placed by customer
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: total_spent
+        description: Total monetary value of all orders (USD)
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: customer_status
+        description: Customer segmentation (Active/At Risk/Inactive)
+        tests:
+          - accepted_values:
+              values: ['Active', 'At Risk', 'Inactive']
+      - name: days_since_last_order
+        description: Days elapsed since most recent order
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+  # ========== FACT TABLES (Gold Layer) ==========
+  
+  - name: fct_orders
+    description: |
+      Analytics-ready fact table for order transactions.
+      - Denormalized with customer and product dimensions
+      - Includes calculated metrics (RFM, sequence, cumulative)
+      - Designed for reporting and analytics queries
+      - Updated incrementally with each run
+    columns:
+      - name: order_id
+        description: Unique order identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Foreign key to dim_customers
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+      - name: order_date
+        description: Date order was placed
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "<= CURRENT_DATE()"  # No future dates
+      - name: gross_order_amount
+        description: Total order amount before discounts and tax (USD)
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+      - name: net_order_amount
+        description: Order amount after discount but before tax/shipping
+        tests:
+          - not_null
+      - name: total_order_value
+        description: |
+            Final order value including tax and shipping (net amount + tax + shipping)
+            This is the amount customer actually pays
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= net_order_amount"  # Always >= net
+      - name: discount_rate
+        description: Percentage of discount applied (0.00 to 1.00)
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "BETWEEN 0 AND 1"
+      - name: is_completed_flag
+        description: Binary flag (1 = completed, 0 = pending/shipped)
+        tests:
+          - accepted_values:
+              values: [0, 1]
+      - name: customer_order_sequence
+        description: Sequence number of this order for the customer (1st, 2nd, 3rd...)
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 1"
+      - name: customer_cumulative_spend
+        description: |
+            Running total of customer spend up to and including this order
+            Used for cohort analysis and LTV calculations
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= gross_order_amount"
+
+  # ========== DIMENSION TABLES (Gold Layer) ==========
+  
+  - name: dim_customers
+    description: |
+      Analytics-ready customer dimension.
+      - Slowly Changing Dimension Type 1 (overwrites history)
+      - One row per customer with current attributes
+    columns:
+      - name: customer_id
+        description: Unique customer identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      - name: email
+        description: Customer email (unique per customer)
+        tests:
+          - unique
+      - name: country
+        description: Customer location
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['US', 'CA', 'MX', 'BR', 'UK', 'DE', 'FR', 'JP', 'AU']
+
+  - name: dim_products
+    description: |
+      Analytics-ready product dimension.
+      - One row per product with current attributes
+      - Contains pricing and categorization info
+    columns:
+      - name: product_id
+        description: Unique product identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: Customer-facing product name
+        tests:
+          - unique
+          - not_null
+      - name: category
+        description: High-level product category
+        tests:
+          - not_null
+      - name: unit_price
+        description: Current product price (USD)
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+
+# ============================================================================
+# GENERIC TESTS (Shared Across Multiple Models)
+# ============================================================================
+
+generic_tests:
+  - name: no_negative_amounts
+    description: Check that monetary amounts are never negative
+    attached_node: ''
+    test_metadata: null
