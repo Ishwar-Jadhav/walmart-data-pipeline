@@ -6,8 +6,6 @@
 
 This project showcases a **real-world data engineering pipeline** built to handle Walmart's complex datasets using modern tools and patterns. The pipeline ingests data from multiple sources (Ghost.build Agentic DB, SQL Chatbots, AWS S3), orchestrates incremental processing through Apache Airflow, transforms data through dbt with quality checks, and materializes analytics-ready tables in Databricks.
 
-**[Watch the Full Project Walkthrough on YouTube](https://youtu.be/ZEE-jNAthB0?si=ABQX_ApyBbGDD5SZ)**
-
 ---
 
 ## 🏗️ Architecture
